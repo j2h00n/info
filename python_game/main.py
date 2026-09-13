@@ -9,6 +9,7 @@ from direct.gui import DirectGuiGlobals as DGG
 from panda3d.core import (
     AmbientLight,
     DirectionalLight,
+    Filename,
     TransparencyAttrib,
     TextNode,
     WindowProperties,
@@ -67,8 +68,12 @@ class Game(ShowBase):
             assets_dir, "RedsenGameMusic_Afternoon", "RedsenGameMusic_Afternoon_Cute_Casual_Loopable.wav"
         )
 
-        self.jump_sfx = self.loader.loadSfx(jump_path) if os.path.exists(jump_path) else None
-        self.bgm_sfx = self.loader.loadSfx(bgm_path) if os.path.exists(bgm_path) else None
+        self.jump_sfx = None
+        if os.path.exists(jump_path):
+            self.jump_sfx = self.loader.loadSfx(Filename.from_os_specific(jump_path))
+        self.bgm_sfx = None
+        if os.path.exists(bgm_path):
+            self.bgm_sfx = self.loader.loadSfx(Filename.from_os_specific(bgm_path))
 
         self.jump_volume = prefs.get_float("JumpVolume", 1.0)
         self.music_volume = prefs.get_float("MusicVolume", 1.0)
@@ -112,7 +117,9 @@ class Game(ShowBase):
             os.path.dirname(os.path.dirname(__file__)),
             "Assets", "Shield Shader FREE", "Textures", "Shader", "Hex Tile.png",
         )
-        shield_tex = self.loader.loadTexture(shield_tex_path) if os.path.exists(shield_tex_path) else None
+        shield_tex = None
+        if os.path.exists(shield_tex_path):
+            shield_tex = self.loader.loadTexture(Filename.from_os_specific(shield_tex_path))
 
         self.left_shield = make_box("left_shield", 0.3, 6, 10, color=(0.3, 0.7, 1, 0.6))
         self.right_shield = make_box("right_shield", 0.3, 6, 10, color=(0.3, 0.7, 1, 0.6))
