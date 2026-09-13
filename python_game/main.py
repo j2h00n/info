@@ -107,11 +107,20 @@ class Game(ShowBase):
             fallback = make_box("bird_fallback", 1, 1, 1, color=(1, 0.85, 0.1, 1))
             fallback.reparentTo(self.bird_np)
 
+        # Shield Shader FREE(무료 애셋) 실제 텍스처를 입혀 쉴드 느낌 근접시킴
+        shield_tex_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "Assets", "Shield Shader FREE", "Textures", "Shader", "Hex Tile.png",
+        )
+        shield_tex = self.loader.loadTexture(shield_tex_path) if os.path.exists(shield_tex_path) else None
+
         self.left_shield = make_box("left_shield", 0.3, 6, 10, color=(0.3, 0.7, 1, 0.6))
         self.right_shield = make_box("right_shield", 0.3, 6, 10, color=(0.3, 0.7, 1, 0.6))
         for shield in (self.left_shield, self.right_shield):
             shield.reparentTo(self.render)
             shield.setTransparency(TransparencyAttrib.M_alpha)
+            if shield_tex is not None:
+                shield.setTexture(shield_tex)
 
         self._chunk_nodes = {}  # id(chunk) -> list[NodePath]
 
