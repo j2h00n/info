@@ -11,8 +11,15 @@ class Bird:
     TILT_ANGLE = 35.0
     TILT_SPEED = 7.0
     GRAVITY = -9.81  # ProjectSettings/DynamicsManager.asset 확인값, Unity 기본 그대로
+    SIDE_DAMPING = 0.1875  # 파닥임으로 생긴 좌우속도가 시간지나며 줄어드는 비율(관성 완화)
 
-    def __init__(self):
+    def __init__(self, easy=False):
+        # 실험 모드(easy=True): 로직/공식은 동일, 체감 난이도만 낮춤(전진/중력 완화)
+        self.easy = easy
+        self.forward_speed = self.FORWARD_SPEED * (0.6 if easy else 1.0)
+        self.gravity = self.GRAVITY * (0.6 if easy else 1.0)
+        self.flap_force = self.FLAP_FORCE * (0.75 if easy else 1.0)
+
         self.position = [0.0, 0.0, 0.0]  # x, y(높이), z(전진)
         self.velocity = [0.0, 0.0, 0.0]
         self.roll = 0.0  # 좌우 기울기(도)
@@ -43,9 +50,20 @@ class Bird:
         self.passed_walls = 0
 
     def jump(self):
+        """파닥임: 좌우입력이 만든 현재 각도(roll)의 수직(날개) 방향으로 추력을 줌.
+        예를 들어 롤이 오른쪽으로 기울어져 있으면, 위로만이 아니라 왼쪽 위 대각선으로 뜬다."""
         if not self.is_game_started or self.is_game_over:
             return False
-        self.velocity[1] = self.FLAP_FORCE
+        roll_rad = math.radians(self.roll)
+        dir_x, dir_y = math.sin(roll_rad), math.cos(roll_rad)
+
+        # 기존 Unity 코드가 점프 직전 y속도를 0으로 리셋하던 것과 같은 취지로,
+        # 이 방향(날개축) 성분만 지우고 그 방향으로 새로 추력을 줌
+        along = self.velocity[0] * dir_x + self.velocity[1] * dir_y
+        self.velocity[0] -= along * dir_x
+        self.velocity[1] -= along * dir_y
+        self.velocity[0] += dir_x * self.flap_force
+        self.velocity[1] += dir_y * self.flap_force
         return True
 
     def update(self, dt, move_x):
@@ -55,10 +73,11 @@ class Bird:
 
         move_x = max(-1.0, min(1.0, move_x))
 
-        # FixedUpdate 대응: 물리 속도 갱신
-        self.velocity[1] += self.GRAVITY * dt
-        self.velocity[0] = move_x * self.SIDE_SPEED
-        self.velocity[2] = self.FORWARD_SPEED
+        # FixedUpdate 대응: 물리 속도 갱신 (좌우입력은 이제 위치가 아니라 각도만 조절,
+        # 실제 좌우/상하 이동은 jump()가 그 각도 방향으로 주는 추력 + 중력으로만 발생)
+        self.velocity[1] += self.gravity * dt
+        self.velocity[2] = self.forward_speed
+        self.velocity[0] *= max(0.0, 1.0 - self.SIDE_DAMPING * dt)
 
         self.position[0] += self.velocity[0] * dt
         self.position[1] += self.velocity[1] * dt

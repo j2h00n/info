@@ -2,7 +2,9 @@
 
 
 class Boundary:
-    LIMIT_X = 34.5
+    # 원본 Unity 값(34.5)은 9기둥 배치 기준. 지금은 3기둥(가로폭 23, 가장자리 기둥
+    # 중심 ±8 + 반폭 3.5)이라 그 가장자리에 맞춰 좁힘 - 안 그러면 기둥 옆으로 그냥 빠져나감.
+    LIMIT_X = 11.5
     WARNING_DISTANCE = 5.0
 
     def clamp_and_shield_alpha(self, bird_x):

@@ -4,12 +4,14 @@ import os
 
 from direct.showbase.ShowBase import ShowBase
 from direct.gui.OnscreenText import OnscreenText
+from direct.gui.OnscreenImage import OnscreenImage
 from direct.gui.DirectGui import DirectButton, DirectSlider, DirectFrame
 from direct.gui import DirectGuiGlobals as DGG
 from panda3d.core import (
     AmbientLight,
     DirectionalLight,
     Filename,
+    Texture,
     TransparencyAttrib,
     TextNode,
     WindowProperties,
@@ -19,18 +21,29 @@ from . import prefs
 from .bird import Bird
 from .boundary import Boundary
 from .wall import WallSpawner
-from .motion_controller import MotionController
+from .motion_capture import MotionCapture
 from .geometry import make_box
-from .seagull_loader import load_seagull_geom
-from . import launcher
+from .seagull_loader import load_seagull_parts
+from .scenery import SceneryManager, spawn_instance
+from direct.interval.IntervalGlobal import Sequence, LerpHprInterval
 
 
 class Game(ShowBase):
-    def __init__(self):
+    def __init__(self, easy=False):
         ShowBase.__init__(self)
 
+        # CC0 배경 애셋(glTF)이 PBR 머티리얼을 써서 기본 파이프라인으론 검게 나옴 - simplepbr로 보정
+        try:
+            import simplepbr
+            simplepbr.init()
+        except ImportError:
+            pass
+
+        # 실험 모드: 로직/구조는 원본과 동일, 체감 난이도(속도/중력/틈/간격)만 낮춤
+        self.easy = easy
+
         props = WindowProperties()
-        props.setTitle("Flappy Runner 3D (Python)")
+        props.setTitle("Flappy Runner 3D (Python)" + (" - 실험 모드" if easy else ""))
         props.setSize(1600, 900)
         self.win.requestProperties(props)
 
@@ -41,19 +54,21 @@ class Game(ShowBase):
         self._setup_lights()
         self._korean_font = self.loader.loadFont("/c/Windows/Fonts/malgun.ttf")
 
-        self.bird_logic = Bird()
+        self.bird_logic = Bird(easy=easy)
         self.boundary = Boundary()
-        self.walls = WallSpawner()
-        self.motion = MotionController(on_jump=self._on_motion_jump)
+        self.walls = WallSpawner(easy=easy)
+        self.scenery = SceneryManager()
+        self.motion = MotionCapture()
+        self.motion_learning_rate = 1.5
 
         self.motion_enabled = prefs.get_int("MotionMode", 0) == 1
         if self.motion_enabled:
-            launcher.start_tracker()
             self.motion.start()
 
         self._build_scene()
         self._setup_audio()
         self._build_ui()
+        self._build_motion_preview()
         self._bind_input()
 
         self.taskMgr.add(self.update, "update")
@@ -89,6 +104,15 @@ class Game(ShowBase):
         if self.jump_sfx:
             self.jump_sfx.play()
 
+    def _play_flap_animation(self):
+        for wing_np, sign in ((self.wing_neg, -1), (self.wing_pos, 1)):
+            if wing_np is None:
+                continue
+            Sequence(
+                LerpHprInterval(wing_np, 0.08, (0, 0, sign * 45)),
+                LerpHprInterval(wing_np, 0.15, (0, 0, 0)),
+            ).start()
+
     # ---------- scene ----------
     def _setup_lights(self):
         alight = AmbientLight("ambient")
@@ -105,9 +129,14 @@ class Game(ShowBase):
         # Unity 원본: 물리 콜라이더는 1x1x1 Cube, 실제 비주얼은 그 자식으로 붙은
         # Seagull.fbx(SailCharacterPack) 모델. 콜라이더용 빈 노드에 시각 모델을 자식으로 붙임.
         self.bird_np = self.render.attach_new_node("bird")
-        seagull_visual = load_seagull_geom()
-        if seagull_visual is not None:
-            seagull_visual.reparentTo(self.bird_np)
+        seagull_parts = load_seagull_parts()
+        self.wing_neg = None
+        self.wing_pos = None
+        if seagull_parts is not None:
+            seagull_parts["root"].reparentTo(self.bird_np)
+            seagull_parts["root"].setH(180)  # 모델이 진행방향 반대로 향해있어 180도 보정
+            self.wing_neg = seagull_parts["wing_neg"]
+            self.wing_pos = seagull_parts["wing_pos"]
         else:
             fallback = make_box("bird_fallback", 1, 1, 1, color=(1, 0.85, 0.1, 1))
             fallback.reparentTo(self.bird_np)
@@ -129,7 +158,17 @@ class Game(ShowBase):
             if shield_tex is not None:
                 shield.setTexture(shield_tex)
 
+        # 바닥: 파이프가 내려가는 최저 높이(컬럼별로 랜덤이라 "가장 안 내려가는" 케이스
+        # 기준)보다 살짝 높은 곳에 둬서, 파이프 밑으로 저공비행해서 빠져나가는 구멍이
+        # 안 생기게 함. 시각적 바닥과 충돌판정 높이를 일치시킴(FLOOR_Y).
+        self.FLOOR_Y = -7.6
+        self.CEILING_Y = 10.3
+        ground = make_box("ground", 200, 4000, 1, color=(0.3, 0.55, 0.28, 1))
+        ground.setPos(0, 2000, self.FLOOR_Y)
+        ground.reparentTo(self.render)
+
         self._chunk_nodes = {}  # id(chunk) -> list[NodePath]
+        self._scenery_nodes = {}  # id(chunk) -> list[NodePath]
 
     def _build_ui(self):
         # 인게임 HUD: ScoreText(anchor 0,1 top-left)/WallText(anchor 1,1 top-right), 둘다 anchoredPos(0,0)
@@ -221,6 +260,30 @@ class Game(ShowBase):
         )
         self.restart_button.hide()
 
+    def _build_motion_preview(self):
+        """웹캠 미리보기를 별도 창이 아니라 게임 창 우하단에 작게 띄움."""
+        self._motion_tex = Texture("motion_preview")
+        self._motion_tex_size = None
+        aspect = self.get_aspect_ratio()
+        self.motion_preview = OnscreenImage(
+            image=self._motion_tex, pos=(aspect - 0.32, 0, -0.72), scale=(0.3, 1, 0.22),
+        )
+        if self.motion_enabled:
+            self.motion_preview.show()
+        else:
+            self.motion_preview.hide()
+
+    def _update_motion_preview(self):
+        frame = self.motion.last_frame
+        if frame is None:
+            return
+        h, w = frame.shape[:2]
+        if self._motion_tex_size != (w, h):
+            self._motion_tex.setup2dTexture(w, h, Texture.T_unsigned_byte, Texture.F_rgb)
+            self._motion_tex_size = (w, h)
+        flipped = frame[::-1]  # Panda 텍스처는 아래->위 순서라 세로 뒤집어서 넣음
+        self._motion_tex.setRamImageAs(flipped.tobytes(), "BGR")
+
     def _bind_input(self):
         self._keys = {"left": False, "right": False}
         self.accept("space", self._on_space)
@@ -241,10 +304,7 @@ class Game(ShowBase):
         else:
             if self.bird_logic.jump():
                 self._play_jump_sfx()
-
-    def _on_motion_jump(self):
-        if self.motion_enabled and self.bird_logic.jump():
-            self._play_jump_sfx()
+                self._play_flap_animation()
 
     def _toggle_motion(self):
         self._set_motion_enabled(not self.motion_enabled)
@@ -257,11 +317,11 @@ class Game(ShowBase):
         prefs.set_int("MotionMode", 1 if enabled else 0)
         prefs.save()
         if enabled:
-            launcher.start_tracker()
             self.motion.start()
+            self.motion_preview.show()
         else:
-            launcher.kill_tracker()
             self.motion.stop()
+            self.motion_preview.hide()
 
     def _on_jump_volume_changed(self):
         self.jump_volume = self.jump_slider["value"]
@@ -279,11 +339,18 @@ class Game(ShowBase):
 
     def _restart(self):
         self.bird_logic.restart()
-        self.walls = WallSpawner()
+        self.walls = WallSpawner(easy=self.easy)
         for nodes in self._chunk_nodes.values():
             for np in nodes:
                 np.removeNode()
         self._chunk_nodes = {}
+
+        self.scenery = SceneryManager()
+        for nodes in self._scenery_nodes.values():
+            for np in nodes:
+                np.removeNode()
+        self._scenery_nodes = {}
+
         self.restart_button.hide()
         self.start_menu.show()
 
@@ -291,10 +358,14 @@ class Game(ShowBase):
     def update(self, task):
         dt = globalClock.getDt()
 
-        move_x = -1.0 if self._keys["left"] else (1.0 if self._keys["right"] else 0.0)
+        move_x = 1.0 if self._keys["left"] else (-1.0 if self._keys["right"] else 0.0)
         if self.motion_enabled:
-            self.motion.update(dt)
-            motion_x = self.motion.get_motion_move_x()
+            jumped = self.motion.update(self.motion_learning_rate, dt)
+            self._update_motion_preview()
+            if jumped and self.bird_logic.jump():
+                self._play_jump_sfx()
+                self._play_flap_animation()
+            motion_x = self.motion.get_move_x()
             move_x = motion_x if abs(motion_x) > abs(move_x) else move_x
 
         self.bird_logic.update(dt, move_x)
@@ -314,14 +385,21 @@ class Game(ShowBase):
         self.right_shield.show() if alpha_r > 0 else self.right_shield.hide()
 
         # Unity 원본: 카메라가 새(Cube)의 자식으로 로컬 오프셋 (0, +2, -7)에 고정.
-        self.camera.setPos(bx, bz - 7, by + 2)
+        self.camera.setPos(bx, bz - 8, by + 4)
         self.camera.lookAt(bx, bz, by)
+
+        self.scenery.update(bz)
+        self._sync_scenery_nodes()
 
         if self.bird_logic.is_game_started and not self.bird_logic.is_game_over:
             self.walls.update(bz)
             self._sync_wall_nodes()
 
             if self.walls.check_collision(bx, by, bz, bird_half=0.5):
+                self.bird_logic.on_collision(is_wall_cube=True)
+
+            # 저공비행/고공비행으로 파이프 위아래를 그냥 뚫고 지나가는 것 방지
+            if by < self.FLOOR_Y or by > self.CEILING_Y:
                 self.bird_logic.on_collision(is_wall_cube=True)
 
         self.score_text.setText(f"Score : {self.bird_logic.score}")
@@ -349,6 +427,28 @@ class Game(ShowBase):
         for cid in list(self._chunk_nodes.keys()):
             if cid not in current_ids:
                 for np in self._chunk_nodes.pop(cid):
+                    np.removeNode()
+
+    def _sync_scenery_nodes(self):
+        current_ids = set()
+        for chunk in self.scenery.chunks:
+            current_ids.add(id(chunk))
+            if id(chunk) in self._scenery_nodes:
+                continue
+            nodes = []
+            for item in chunk:
+                np = spawn_instance(item.filename, self.render)
+                if np is None:
+                    continue
+                np.setPos(item.x, item.z, item.y)
+                np.setScale(item.scale)
+                np.setH(item.heading)
+                nodes.append(np)
+            self._scenery_nodes[id(chunk)] = nodes
+
+        for cid in list(self._scenery_nodes.keys()):
+            if cid not in current_ids:
+                for np in self._scenery_nodes.pop(cid):
                     np.removeNode()
 
 
