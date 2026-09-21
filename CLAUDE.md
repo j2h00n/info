@@ -13,15 +13,27 @@ When changing gameplay behavior, the Unity C# scripts under `Assets/New Folder/`
 
 ## Running the Python port
 
+Deps are pinned in `python_game/requirements.txt` and installed into an isolated
+venv at `.venv/` (gitignored) — `mediapipe` previously force-downgraded system-wide
+`numpy`/`protobuf` when installed globally, which broke unrelated tools (streamlit,
+tensorboard, wandb, aider-chat), so don't install these packages into the system
+Python again.
+
+Setup (once):
+```
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r python_game/requirements.txt
+```
+
 Run from the repo root (not from inside `python_game/`, since it's a package with relative imports):
 
 ```
-python -m python_game.main
+.venv/Scripts/python.exe -m python_game.main
 ```
 
 Controls: Space = start/jump, Left/Right arrows = steer, `M` = toggle webcam motion control, `R` = restart.
 
-There is no build step, linter, or test suite in this repo — `python -m py_compile python_game/*.py` is the only sanity check currently used before considering a change done.
+There is no build step, linter, or test suite in this repo — `.venv/Scripts/python.exe -m py_compile python_game/*.py` is the only sanity check currently used before considering a change done.
 
 ### Windows path gotcha
 
@@ -34,7 +46,9 @@ Each module is a fairly direct port of one Unity script (or one concern split ou
 - `bird.py` — port of `BirdController.cs`'s physics/state (gravity, flap, side-move, tilt, score/best-score). Pure Python, no Panda3D dependency; `main.py` reads `Bird.position`/`.roll` each frame and pushes them onto the Panda `NodePath`.
 - `wall.py` — port of `NewMonoBehaviourScript.cs` (**not** `BoundaryWall.cs` — the actual obstacle spawner in the Unity project is the oddly-named `NewMonoBehaviourScript`). Spawns 9-column pillar "chunks" ahead of the player with a random per-column gap, despawns chunks behind the player.
 - `boundary.py` — port of `BoundaryWall.cs`: clamps the player's X position and computes the left/right shield fade alpha.
-- `motion_capture.py` — webcam motion control, running **in-process** (no subprocess, no UDP — an earlier design used a separate `motion_tracker.py` process talking over a UDP socket, which was scrapped because it made debugging camera issues much harder and forced a second, separate preview window). Uses MediaPipe Pose (`mediapipe.solutions.pose`) to track the nose (steer) and both wrists (jump gesture: rapid up/down wrist oscillation *specifically next to the head* within `NEAR_HEAD_X`/`FLAP_WINDOW_SEC`/`FLAP_MIN_PEAKS`/`FLAP_MIN_RANGE`, tuned in that file). This is a **deliberate deviation** from the original `MotionController.cs`, which inferred jump from a head-bob velocity spike — replaced with an explicit hand-flap-beside-head gesture per product decision. Note: installing `mediapipe` in this environment force-downgraded `numpy`/`protobuf` system-wide (this is a shared, non-venv Python install), which can break other unrelated tools (`streamlit`, `tensorboard`, `wandb`, `aider-chat` were seen to warn about version conflicts) — be aware before adding more heavy CV/ML deps here.
+- `motion_capture.py` — webcam motion control, running **in-process** (no subprocess, no UDP — an earlier design used a separate `motion_tracker.py` process talking over a UDP socket, which was scrapped because it made debugging camera issues much harder and forced a second, separate preview window). Uses MediaPipe Pose (`mediapipe.solutions.pose`) to track the nose (steer) and both wrists (jump gesture: rapid up/down wrist oscillation *specifically next to the head* within `NEAR_HEAD_X`/`FLAP_WINDOW_SEC`/`FLAP_MIN_PEAKS`/`FLAP_MIN_RANGE`, tuned in that file). This is a **deliberate deviation** from the original `MotionController.cs`, which inferred jump from a head-bob velocity spike — replaced with an explicit hand-flap-beside-head gesture per product decision. `mediapipe` pins `numpy`/`protobuf` to versions that conflict with other tools if installed system-wide — this is why deps live in `.venv/` now (see "Running the Python port" above); don't reintroduce a global install.
+
+  Steering/flap sign conventions (head angle → move_x → roll → flap direction) got flipped back and forth multiple times during development — see `python_game/CONVENTIONS.md` before touching any of that chain again.
   - `main.py` calls `MotionCapture.update(learning_rate, dt)` every frame (only while motion mode is on), which returns a `jumped` bool and updates `.last_frame` (a BGR numpy frame with the MediaPipe skeleton drawn on it) — `main.py` blits that frame onto a small `OnscreenImage` in the corner of the game window as a live preview, so there is exactly one window, not two.
   - Camera backend gotcha found the hard way: on this machine, forcing `cv2.CAP_DSHOW` and/or forcing `CAP_PROP_FOURCC` to `MJPG` produced a corrupted/garbled frame or a solid-black frame respectively. Plain `cv2.VideoCapture(0)` with no backend/format overrides is what actually works — don't reintroduce backend/codec forcing speculatively; if a capture problem comes up again, get an actual screenshot of the failure before changing capture parameters.
 - `seagull_loader.py` — a hand-rolled parser for `Assets/New Folder/Seagull.fbx`. This is an **ASCII FBX 6.1** file (old Blender exporter format), which neither Panda3D nor the `assimp-py` binding installed here can load (assimp errors with "FBX-DOM unsupported, old format version"). The loader regex-extracts the `Vertices`/`PolygonVertexIndex`/`Normals`/`UV`/`UVIndex` arrays directly from the text and builds a Panda3D `Geom` by hand (fan-triangulating each polygon). It ignores the skeleton/skin/animation data in the file — only the static bind-pose mesh is used. There is no texture (`Seagull.png` is referenced by the FBX via an absolute path but was never actually committed to this repo), so the model renders as flat-shaded grey.

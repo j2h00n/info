@@ -1,3 +1,33 @@
 __pycache__/
 *.pyc
 python_game/save.json
+.venv/
+
+# Unity 유료/외부 애셋 팩 - 라이선스상 이 repo에 커밋 안 함
+Assets/BOXOPHOBIC/
+Assets/BOXOPHOBIC.meta
+Assets/Enxemac/
+Assets/Enxemac.meta
+Assets/Mellow Fox studios/
+Assets/Mellow Fox studios.meta
+Assets/Game Sound Solutions - 8 bits Elements/
+Assets/Game Sound Solutions - 8 bits Elements.meta
+Assets/RedsenGameMusic_Afternoon/
+Assets/RedsenGameMusic_Afternoon.meta
+Assets/Standard Assets/
+Assets/Standard Assets.meta
+Assets/New Folder/Seagull.fbx
+Assets/New Folder/Seagull.fbx.meta
+
+# Unity 자동생성/템플릿 - 코드 자산 아님
+Assets/TextMesh Pro/
+Assets/TextMesh Pro.meta
+Assets/Unity.VisualScripting.Generated/
+Assets/Unity.VisualScripting.Generated.meta
+Assets/TutorialInfo/
+Assets/TutorialInfo.meta
+Assets/UI Toolkit/
+Assets/UI Toolkit.meta
+
+# 개인 녹화 영상
+*.mp4
