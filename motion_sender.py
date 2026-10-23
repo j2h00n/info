@@ -9,7 +9,6 @@ Unity 쪽 Assets/New Folder/MotionController.cs가 이 프로토콜을 받도록
 python_game/motion_capture.py와 감지 로직은 같음(Panda3D 게임에 내장된 버전의
 텍스처 미리보기 대신 여기선 cv2.imshow 창으로 미리보기를 띄움).
 """
-import collections
 import math
 import socket
 import sys
@@ -18,15 +17,24 @@ import time
 import cv2
 import mediapipe as mp
 
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5052
+UDP_IP = "127.0.0.1"  # 같은 PC의 Unity로 전송 (다른 PC로 보내려면 그 PC IP로 변경)
+UDP_PORT = 5052       # Unity MotionController.cs의 수신 포트와 반드시 같아야 함
 
-# 파닥임(점프) 감지 파라미터
-FLAP_WINDOW_SEC = 0.3
-FLAP_MIN_PEAKS = 1
-FLAP_MIN_RANGE = 0.035
-NEAR_HEAD_X = 0.35
-FLAP_COOLDOWN = 0.2
+# 파닥임(점프) 감지 파라미터 - 손목 수직 속도(정규화좌표/초) 기준 엣지 트리거.
+# 오탐 줄이려고 구조적으로 두 가지를 더 걸음:
+#  1) 스무딩: 프레임 하나짜리 순간속도는 mediapipe 랜드마크 지터에 민감해서, 지수이동평균
+#     (EMA)으로 눌러 진짜 손 움직임만 남김.
+#  2) 양손 동시성: 한쪽 손목만 빨리 움직였다고 인정 안 함. 실제 날갯짓은 보통 양팔이 같이
+#     움직이니까, 두 손목이 SYNC_TOLERANCE 안에서 "같이" 빨라졌을 때만 파닥으로 인정.
+# 시간 기반 쿨다운 대신 히스테리시스(armed/triggered)로 "파닥 한번 = 점프 한번"을 보장:
+# 속도가 FLAP_VELOCITY를 넘는 "순간"에만 트리거되고, RESET_VELOCITY 밑으로 손이
+# 다시 가라앉기 전까진 재무장 안 됨 - 손이 빠르게 계속 흔들려도 중복 점프 안 남.
+FLAP_VELOCITY = 1.0        # 스무딩된 속도(/초) 기준 - 원값 1.3에서 낮춤(EMA가 피크를 눌러서)
+FLAP_RESET_VELOCITY = 0.4  # 이 밑으로 속도가 떨어져야 다음 파닥을 다시 받아들임
+REARM_QUIET_SEC = 0.2      # RESET_VELOCITY 밑으로 "이 시간 동안 계속" 있어야 재무장 -
+                           # 한 프레임만 잠깐 느려져도(랜드마크 지터) 바로 재무장되던 것 방지
+SPEED_SMOOTH_RATE = 15.0   # 속도 EMA 수렴 속도(초당 비율)
+SYNC_TOLERANCE = 0.15      # 두 손목이 "동시"로 인정되는 최대 시간차(초)
 
 # 머리 기울기(각도) 조향 파라미터
 MAX_TILT_DEG = 20.0   # Unity MotionController.cs의 maxTiltDeg와 맞출 것
@@ -34,24 +42,19 @@ INVERT_TILT = True
 ANGLE_SMOOTH_RATE = 8.0
 
 
-def toggles_and_range(hist):
-    ys = [y for _, y in hist]
-    if len(ys) < 3:
-        return 0, 0.0
-    diffs = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)]
-    changes, prev_sign = 0, 0
-    for d in diffs:
-        if abs(d) < 1e-4:
-            continue
-        sign = 1 if d > 0 else -1
-        if prev_sign != 0 and sign != prev_sign:
-            changes += 1
-        prev_sign = sign
-    return changes, (max(ys) - min(ys))
+def update_wrist_speed(y, prev_y, speed, dt):
+    """(new_speed, new_prev_y) 반환 - 수직 속도(위로 +)를 EMA로 스무딩.
+    부호 있는 속도를 씀 - 절대값만 보면 파닥의 "올라감"/"내려감" 구간이 둘 다
+    트리거돼서 한번 파닥에 점프가 두번 남. 올라가는 방향(양수)만 트리거로 씀."""
+    if prev_y is None or dt <= 0:
+        return 0.0, y
+    raw_speed = (prev_y - y) / dt  # mediapipe y는 아래로 갈수록 커짐 -> 위로 갈 때 양수
+    speed += (raw_speed - speed) * min(1.0, dt * SPEED_SMOOTH_RATE)
+    return speed, y
 
 
 def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # UDP 소켓(연결 없이 패킷만 전송)
 
     mp_pose = mp.solutions.pose
     mp_drawing = mp.solutions.drawing_utils
@@ -62,9 +65,13 @@ def main():
         print("웹캠을 열 수 없음")
         sys.exit(1)
 
+    # 상태 변수들 - python_game/motion_capture.py의 MotionCapture 멤버와 1:1 대응
     head_angle_deg = 0.0
-    left_hist, right_hist = [], []
-    last_jump_time = 0.0
+    left_prev_y, right_prev_y = None, None
+    left_speed, right_speed = 0.0, 0.0
+    left_high_at, right_high_at = None, None
+    left_active_at, right_active_at = None, None
+    armed = True
     last_t = time.time()
 
     try:
@@ -74,6 +81,7 @@ def main():
                 time.sleep(0.05)
                 continue
 
+            # dt = 직전 프레임과의 시간차(초). 0으로 나누기 방지로 최소 1ms 보장
             now = time.time()
             dt = max(1e-3, now - last_t)
             last_t = now
@@ -102,38 +110,63 @@ def main():
                     raw_angle = math.degrees(math.atan2(dy, dx))
                     head_angle_deg += (raw_angle - head_angle_deg) * min(1.0, dt * ANGLE_SMOOTH_RATE)
 
-                for wrist, hist in ((left_wrist, left_hist), (right_wrist, right_hist)):
-                    near_head = abs(wrist.x - nose.x) < NEAR_HEAD_X and wrist.y < nose.y + 0.45
-                    if near_head and wrist.visibility > 0.4:
-                        hist.append((now, wrist.y))
-                    while hist and now - hist[0][0] > FLAP_WINDOW_SEC:
-                        hist.pop(0)
+                # 손목 속도 처리: python_game/motion_capture.py의 update()와 동일 로직
+                # (visibility>0.4면 속도 갱신 -> FLAP_VELOCITY 넘으면 high_at, RESET_VELOCITY 넘으면 active_at 기록)
+                if left_wrist.visibility > 0.4:
+                    left_speed, left_prev_y = update_wrist_speed(left_wrist.y, left_prev_y, left_speed, dt)
+                    if left_speed > FLAP_VELOCITY:
+                        left_high_at = now
+                    if abs(left_speed) > FLAP_RESET_VELOCITY:
+                        left_active_at = now
+                else:
+                    left_prev_y, left_speed = None, 0.0
+                    left_high_at, left_active_at = None, None
 
-                if now - last_jump_time > FLAP_COOLDOWN:
-                    for hist in (left_hist, right_hist):
-                        changes, y_range = toggles_and_range(hist)
-                        if changes >= FLAP_MIN_PEAKS and y_range >= FLAP_MIN_RANGE:
-                            jump_flag = 1
-                            last_jump_time = now
-                            hist.clear()
-                            break
+                if right_wrist.visibility > 0.4:
+                    right_speed, right_prev_y = update_wrist_speed(right_wrist.y, right_prev_y, right_speed, dt)
+                    if right_speed > FLAP_VELOCITY:
+                        right_high_at = now
+                    if abs(right_speed) > FLAP_RESET_VELOCITY:
+                        right_active_at = now
+                else:
+                    right_prev_y, right_speed = None, 0.0
+                    right_high_at, right_active_at = None, None
+
+                # 양손이 SYNC_TOLERANCE 안에서 같이 빨라졌을 때만 파닥 인정, armed일 때 1회만 점프
+                both_high = (
+                    left_high_at is not None and right_high_at is not None
+                    and abs(left_high_at - right_high_at) <= SYNC_TOLERANCE
+                    and now - max(left_high_at, right_high_at) <= SYNC_TOLERANCE
+                )
+                if armed and both_high:
+                    jump_flag = 1
+                    armed = False
+
+                # 재무장은 양손 다 REARM_QUIET_SEC 동안 계속 조용해야만
+                left_quiet = left_active_at is None or now - left_active_at >= REARM_QUIET_SEC
+                right_quiet = right_active_at is None or now - right_active_at >= REARM_QUIET_SEC
+                if left_quiet and right_quiet:
+                    armed = True
 
                 mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
             sign = -1.0 if INVERT_TILT else 1.0
             move_x = max(-1.0, min(1.0, (head_angle_deg / MAX_TILT_DEG) * sign))
 
+            # 프로토콜: "코x,코y,머리각도,점프(0/1)" 문자열 한 줄을 매 프레임 전송
             msg = f"{head_x:.4f},{head_y:.4f},{head_angle_deg:.2f},{jump_flag}".encode("utf-8")
             sock.sendto(msg, (UDP_IP, UDP_PORT))
 
             status = "JUMP!" if jump_flag else "tracking"
             cv2.putText(frame, f"{status} angle={head_angle_deg:+.1f} move_x={move_x:+.2f}",
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(frame, f"L_spd={left_speed:.2f} R_spd={right_speed:.2f}",
+                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 200, 0), 2)
             cv2.imshow("motion sender -> Unity (q to close)", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-            time.sleep(1 / 30.0)
+            time.sleep(1 / 30.0)  # 전송 속도 제한(약 30회/초). 줄이면 CPU 사용량 증가
     except KeyboardInterrupt:
         pass
     finally:

@@ -2,11 +2,13 @@
 import json
 import os
 
+# 저장 파일 위치: python_game/save.json (gitignore됨). 지우면 최고기록/설정 초기화.
 _PATH = os.path.join(os.path.dirname(__file__), "save.json")
-_data = {}
+_data = {}  # 메모리 상의 저장 데이터 {키: 값}. set_*는 여기만 바꾸고, save()를 불러야 파일에 기록됨
 
 
 def _load():
+    """모듈 import 시 1회 호출: 파일이 있으면 읽고, 없거나 깨졌으면 빈 dict로 시작."""
     global _data
     if os.path.exists(_PATH):
         try:
@@ -19,10 +21,12 @@ def _load():
 
 
 def save():
+    """메모리의 _data를 save.json에 기록."""
     with open(_PATH, "w", encoding="utf-8") as f:
         json.dump(_data, f)
 
 
+# --- Unity PlayerPrefs.GetInt/SetInt/GetFloat/SetFloat 와 같은 이름/동작 ---
 def get_int(key, default=0):
     return int(_data.get(key, default))
 
