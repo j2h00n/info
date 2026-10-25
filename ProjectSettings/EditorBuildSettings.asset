@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/SampleScene.unity
+    guid: 99c9720ab356a0642a771bea13969a05
+  - enabled: 1
+    path: Assets/Scenes/Stage2_Desert.unity
+    guid: fee71455d6fd61f45a873b3ddf7f74e0
+  - enabled: 1
+    path: Assets/Scenes/Stage3_IceCave.unity
+    guid: 2c84d7ed0402a9f4cadb8b6bb89bb706
+  - enabled: 1
+    path: Assets/Scenes/Stage4_City.unity
+    guid: b8969eada56ba7c44b2ae3015b6a5d30
+  m_configObjects:
+    com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
+    com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}

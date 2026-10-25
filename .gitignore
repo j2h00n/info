@@ -104,3 +104,10 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# 이 프로젝트 전용
+# 데모 배포용 파이썬 묶음 (OpenCV·MediaPipe 포함, 358MB) → 저장소에는 안 올림
+/python_runtime/
+# 테스트 스크린샷
+/[Cc]aptures/
+__pycache__/
