@@ -15,14 +15,27 @@
 
 ## 빠른 시작 (Python 버전)
 
-### 1. 설치 (최초 1회)
+### 0. 준비물
+
+- Windows + Python 3.11 (3.11.9에서 확인함, 다른 버전은 미확인) (Git Bash 또는 PowerShell 기준)
+- 웹캠 (모션 컨트롤을 쓸 때만 필요, 키보드만 쓰면 없어도 됨)
+
+### 1. 내려받기 + 설치 (최초 1회)
 
 ```
+git clone https://github.com/j2h00n/info.git
+cd info
+git checkout kang-ji-hun
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r python_game/requirements.txt
 ```
 
+PowerShell에서는 `.venv/Scripts/python.exe` 대신 `.venv\Scripts\python.exe`를 써도 됨.
+
 `mediapipe`가 시스템 전역 `numpy`/`protobuf` 버전을 망가뜨리므로 **반드시 `.venv` 안에만 설치**할 것.
+
+> **참고**: 유료 에셋(갈매기 모델 `Seagull.fbx`, 효과음, BGM)은 라이선스 문제로 레포에 없음.
+> 없어도 게임은 실행됨 - 갈매기 대신 노란 박스가 나오고 소리만 안 남.
 
 ### 2. 실행
 
@@ -31,6 +44,13 @@ python -m venv .venv
 ```
 .venv/Scripts/python.exe -m python_game.main
 ```
+
+창이 뜨면 시작 메뉴에서 **시작** 버튼을 누르거나 `Space`를 누르면 게임이 시작됨.
+
+**실행이 안 될 때**
+- `ModuleNotFoundError`: `.venv` 말고 시스템 Python으로 실행했을 가능성. 위 명령처럼 `.venv/Scripts/python.exe`로 실행.
+- `ImportError: attempted relative import`: `python_game/` 폴더 안에서 실행했을 가능성. 레포 루트에서 `-m python_game.main`으로 실행.
+- 웹캠 화면이 까맣거나 깨짐: 코드에서 카메라 백엔드/코덱을 건드리지 말고 `M`으로 모션 모드를 끄고 키보드로 플레이.
 
 ### 3. 조작법
 
